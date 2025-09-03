@@ -1,0 +1,42 @@
+package:
+  name: humanfilt
+  version: "0.6.0"
+
+source:
+  path: ..
+
+build:
+  noarch: python
+  script: bash recipe/build.sh
+  entry_points:
+    - humanfilt = humanfilt.cli:main
+
+requirements:
+  host:
+    - python >=3.9
+    - pip
+  run:
+    - python >=3.9
+    - bwa
+    - bowtie2
+    - minimap2
+    - samtools
+    - kraken2
+    - trim-galore
+    - fastqc
+    - bbmap
+    - fastuniq
+    - pigz
+    - curl
+    - coreutils
+    - tar
+    - zstd
+
+test:
+  commands:
+    - humanfilt --help
+
+about:
+  home: https://github.com/jprehn-lab/humanfilt
+  license: MIT
+  summary: "WGS paired/single & RNA-seq single decontamination with first-run Zenodo download (record 17020482)."

@@ -1,0 +1,2 @@
+[console_scripts]
+humanfilt = humanfilt.cli:main
