@@ -1,13 +1,18 @@
-import argparse, json
-from pathlib import Path
+import argparse
 from .downloader import ensure_data_ready
 from .pipeline_wgs import run_wgs
 from .pipeline_rnaseq import run_rnaseq
+from .utils import detect_threads
+import os
+
+
+os.environ.setdefault("HUMANFILT_ZENODO_RECORD", "17020482")
+
 
 def _parser():
     p = argparse.ArgumentParser(
         prog="humanfilt",
-        description="Human read filtering (WGS paired/single & RNA-seq single) with first-run Zenodo downloads",
+        description="Human read filtering (WGS & RNA-seq) with first-run Zenodo downloads",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -17,51 +22,38 @@ def _parser():
 
     r = sub.add_parser("run", help="Run the pipeline")
     r.add_argument("--mode", choices=["wgs","rnaseq"], required=True)
-    r.add_argument("--input", required=True)
-    r.add_argument("--output", required=True)
-    r.add_argument("--report", required=True)
-    r.add_argument("--threads", type=int, default=8)
-    r.add_argument("--data-dir", default=None)
+    r.add_argument("--input", required=True, help="Input folder with FASTQs")
+    r.add_argument("--output", required=True, help="Output folder")
+    r.add_argument("--report", required=True, help="CSV report path")
+    r.add_argument("--threads", type=int, default=0, help="Override threads (default: auto from env/CPU)")
+    r.add_argument("--trim-quality", type=int, default=20, help="Trim Galore: --quality INT (default 20)")
+    r.add_argument("--trim-length", type=int, default=20, help="Trim Galore: --length  INT (default 20)")
+    r.add_argument("--data-dir", default=None, help="Override cache folder")
     r.add_argument("--kraken2-db", default=None, help="Override Kraken2 DB path")
-
-    # Trim Galore controls (requested)
-    r.add_argument("--trim-quality", type=int, default=20,
-                   help="Trim Galore --quality <INT>. Default: 20.")
-    r.add_argument("--trim-length", type=int, default=20,
-                   help="Trim Galore --length <INT>. Default: 20 (0 disables read discard).")
-
-    # WGS layout (paired or single). RNA-seq is always single.
-    r.add_argument("--wgs-layout", choices=["paired","single"], default="paired",
-                   help="Only used when --mode wgs (default: paired).")
-
-    # RNA-seq specifics
+    r.add_argument("--wgs-layout", choices=["paired","single"], default="paired", help="WGS layout")
     r.add_argument("--rna-preset", choices=["illumina","ont"], default="illumina",
-                   help="Minimap2 preset for RNA stage (illumina=sr, ont=map-ont)")
-    r.add_argument("--pattern", default=None,
-                   help="RNA input pattern (default: *.R1.fastq.gz; fallback: any *.fastq* not matching _R2).")
+                   help="Minimap2 preset for RNA filters (illumina=sr, ont=map-ont)")
+    r.add_argument("--pattern", default=None, help="RNA input pattern (default: *.R1.fastq.gz)")
     return p
 
 def main():
     args = _parser().parse_args()
-
     if args.cmd == "setup":
-        cfg = ensure_data_ready(args.data_dir, force=args.force)
-        print(json.dumps(cfg, indent=2))
+        ensure_data_ready(args.data_dir, force=args.force)
         return
 
+    threads = args.threads if args.threads and args.threads > 0 else detect_threads()
     cfg = ensure_data_ready(args.data_dir, force=False)
-    if args.kraken2_db:
-        cfg["kraken2_db"] = args.kraken2_db
-
-    Path(args.output).mkdir(parents=True, exist_ok=True)
 
     if args.mode == "wgs":
-        run_wgs(args.input, args.output, args.report, args.threads, cfg,
-                layout=args.wgs_layout, trim_quality=args.trim_quality, trim_length=args.trim_length)
+        run_wgs(args.input, args.output, args.report, threads, cfg,
+                layout=args.wgs_layout, trim_q=args.trim_quality, trim_len=args.trim_length,
+                kraken2_override=args.kraken2_db)
     else:
-        run_rnaseq(args.input, args.output, args.report, args.threads, cfg,
-                   rna_preset=args.rna_preset, pattern=args.pattern,
-                   trim_quality=args.trim_quality, trim_length=args.trim_length)
+        run_rnaseq(args.input, args.output, args.report, threads, cfg,
+                   rna_preset=args.rna_preset, trim_q=args.trim_quality, trim_len=args.trim_length,
+                   pattern=args.pattern, kraken2_override=args.kraken2_db)
 
 if __name__ == "__main__":
     main()
+

@@ -1,202 +1,176 @@
 from pathlib import Path
-import subprocess, shutil, tempfile
-from .utils import nreads_fastq, ensure_tools
+import subprocess, tempfile, shutil
+from .utils import ensure_tools, nreads_fastq
 
-def _trim_galore_paired(out, r1, r2, threads, q, l):
-    subprocess.check_call([
-        "trim_galore","--paired","--cores",str(threads),
-        "--quality", str(q), "--length", str(l),
-        "--output_dir", str(out),
-        str(r1), str(r2)
-    ])
-    # canonical names from Trim Galore
-    base = r1.name.replace("_R1.fastq.gz","").replace("_R1.fastq","")
-    tr_r1 = out/f"{base}_R1_val_1.fq.gz"
-    tr_r2 = out/f"{base}_R2_val_2.fq.gz"
-    if not tr_r1.exists(): tr_r1 = tr_r1.with_suffix("")  # .fq
-    if not tr_r2.exists(): tr_r2 = tr_r2.with_suffix("")
-    return tr_r1, tr_r2, base
-
-def _trim_galore_single(out, r, threads, q, l):
-    subprocess.check_call([
-        "trim_galore","--cores",str(threads),
-        "--quality", str(q), "--length", str(l),
-        "--output_dir", str(out),
-        str(r)
-    ])
-    base = r.name.replace(".fastq.gz","").replace(".fastq","")
-    tr = out/f"{base}_trimmed.fq.gz"
-    if not tr.exists(): tr = tr.with_suffix("")  # .fq
-    if not tr.exists():
-        cand = list(out.glob(f"{base}*trimmed.fq*"))
-        if not cand: raise SystemExit(f"No trimmed file for {r}")
-        tr = cand[0]
-    return tr, base
-
-def run_wgs(input_dir, output_dir, report_csv, threads, cfg, *,
-            layout: str = "paired", trim_quality: int = 20, trim_length: int = 20):
-    """
+def run_wgs(input_dir, output_dir, report_csv, threads, cfg,
+            layout="paired", trim_q=20, trim_len=20, kraken2_override=None):
+    """WGS pipeline.
     layout: 'paired' or 'single'
     """
     ensure_tools(
-        required=["bwa","bowtie2","minimap2","samtools","kraken2","trim_galore","bbduk.sh"],
+        required=["trim_galore","bbduk.sh","kraken2","bwa","bowtie2","minimap2","samtools","fastqc","seqkit"],
         anyof=["fastuniq","dedupe.sh"]
     )
 
     inp = Path(input_dir); out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
-    rep = Path(report_csv)
+    report = Path(report_csv)
+    if layout == "paired":
+        header = ("Sample,Initial_R1,Initial_R2,Trim_R1,Trim_R2,Dedup_R1,Dedup_R2,"
+                  "BBDuk_R1,BBDuk_R2,Kraken2_R1,Kraken2_R2,BWA_R1,BWA_R2,"
+                  "T2T_R1,T2T_R2,HPRC_R1,HPRC_R2\n")
+    else:
+        header = "Sample,Initial,Trim,Dedup,BBDuk,Kraken2,GRCh38,T2T,HPRC\n"
+    if not report.exists():
+        report.write_text(header)
+
+    def count(p): return nreads_fastq(Path(p))
 
     if layout == "paired":
-        if not rep.exists():
-            rep.write_text(
-                "Sample,Initial_R1,Initial_R2,Trimmed_R1,Trimmed_R2,VectorClean_R1,VectorClean_R2,"
-                "Dedup_R1,Dedup_R2,Kraken2_R1,Kraken2_R2,BWA_R1,BWA_R2,T2T_R1,T2T_R2,HPRC_R1,HPRC_R2\n"
-            )
+        # discover R1/R2 pairs
         pairs = {}
-        for r1 in sorted(list(inp.glob("*_R1.fastq.gz")) + list(inp.glob("*_R1.fastq"))):
-            r2 = Path(str(r1).replace("_R1.fastq.gz","_R2.fastq.gz").replace("_R1.fastq","_R2.fastq"))
+        for r1 in list(inp.glob("*_R1.fq*")) + list(inp.glob("*_R1.fastq*")):
+            r2 = Path(str(r1).replace("_R1.","_R2."))
             if r2.exists():
-                sample = r1.name.replace("_R1.fastq.gz","").replace("_R1.fastq","")
+                sample = (r1.name
+                          .replace("_R1.fastq.gz","")
+                          .replace("_R1.fastq","")
+                          .replace("_R1.fq.gz","")
+                          .replace("_R1.fq",""))
                 pairs[sample] = (r1, r2)
 
-        for sample, (r1, r2) in pairs.items():
-            print(f"[WGS-PE] {sample}")
-            init_r1, init_r2 = nreads_fastq(r1), nreads_fastq(r2)
+        for sample, (r1, r2) in sorted(pairs.items()):
+            print(f"[WGS] {sample} (paired)")
+            init_r1, init_r2 = count(r1), count(r2)
 
-            tr_r1, tr_r2, base = _trim_galore_paired(out, r1, r2, threads, trim_quality, trim_length)
-            trc_r1, trc_r2 = nreads_fastq(tr_r1), nreads_fastq(tr_r2)
+            # 1) Trim Galore
+            subprocess.check_call(["trim_galore","--paired","--cores",str(threads),
+                                   "--quality",str(trim_q),"--length",str(trim_len),
+                                   "--output_dir",str(out), str(r1), str(r2)])
+            tr_r1 = out/f"{sample}_R1_val_1.fq.gz"; tr_r2 = out/f"{sample}_R2_val_2.fq.gz"
+            if not tr_r1.exists(): tr_r1 = Path(str(tr_r1).removesuffix(".gz"))
+            if not tr_r2.exists(): tr_r2 = Path(str(tr_r2).removesuffix(".gz"))
+            trc_r1, trc_r2 = count(tr_r1), count(tr_r2)
 
-            vec_r1 = out/f"{base}_vec_R1.fq";  vec_r2 = out/f"{base}_vec_R2.fq"
-            bb_stats = out/f"{base}_bbduk_stats.txt"
-            subprocess.check_call([
-                "bbduk.sh", f"in1={tr_r1}", f"in2={tr_r2}",
-                f"out1={vec_r1}", f"out2={vec_r2}",
-                f"ref={cfg['univec_ref']}", "k=27", "hdist=1",
-                f"stats={bb_stats}", f"threads={threads}"
-            ])
-            vcc_r1, vcc_r2 = nreads_fastq(vec_r1), nreads_fastq(vec_r2)
-
-            dd_r1 = out/f"{base}_dedup_R1.fq"; dd_r2 = out/f"{base}_dedup_R2.fq"
+            # 2) Dedup (fastuniq preferred, else dedupe.sh)
+            dd_r1 = out/f"{sample}_dedup_R1.fq"; dd_r2 = out/f"{sample}_dedup_R2.fq"
             if shutil.which("fastuniq"):
-                import tempfile
+                # fastuniq needs uncompressed inputs
                 with tempfile.TemporaryDirectory() as td:
-                    pairlist = Path(td)/"pairs.txt"
-                    pairlist.write_text(f"{vec_r1}\n{vec_r2}\n")
-                    subprocess.check_call(["fastuniq","-i",str(pairlist),"-t","q","-o",str(dd_r1),"-p",str(dd_r2)])
+                    r1u = Path(td)/"R1.fq"; r2u = Path(td)/"R2.fq"
+                    subprocess.check_call(["bash","-lc",f"pigz -dc {tr_r1} > {r1u}"])
+                    subprocess.check_call(["bash","-lc",f"pigz -dc {tr_r2} > {r2u}"])
+                    lst = Path(td)/"pairs.txt"; lst.write_text(f"{r1u}\n{r2u}\n")
+                    subprocess.check_call(["fastuniq","-i",str(lst),"-t","q","-o",str(dd_r1),"-p",str(dd_r2)])
             else:
-                subprocess.check_call(["dedupe.sh", f"in1={vec_r1}", f"in2={vec_r2}", f"out1={dd_r1}", f"out2={dd_r2}",
-                                       "ac=f", f"threads={threads}"])
-            ddc_r1, ddc_r2 = nreads_fastq(dd_r1), nreads_fastq(dd_r2)
+                subprocess.check_call(["dedupe.sh", f"in1={tr_r1}", f"in2={tr_r2}",
+                                       f"out1={dd_r1}", f"out2={dd_r2}", "ac=f", f"threads={threads}"])
+            ddc_r1, ddc_r2 = count(dd_r1), count(dd_r2)
 
-            kr_un_r1 = out/f"{base}_kraken2_R_1.fq"
-            kr_un_r2 = out/f"{base}_kraken2_R_2.fq"
-            kr_report = out/f"{base}_kraken2_report.txt"
-            subprocess.check_call([
-                "kraken2","--db",cfg["kraken2_db"],"--threads",str(threads),
-                "--report",str(kr_report),"--paired",
-                "--unclassified-out", str(out/f"{base}_kraken2_R#.fq"),
-                str(dd_r1), str(dd_r2)
-            ])
-            krc_r1, krc_r2 = nreads_fastq(kr_un_r1), nreads_fastq(kr_un_r2)
+            # 3) BBDuk (UniVec)
+            vec_r1 = out/f"{sample}_bbduk_R1.fq"; vec_r2 = out/f"{sample}_bbduk_R2.fq"
+            subprocess.check_call(["bbduk.sh", f"in1={dd_r1}", f"in2={dd_r2}",
+                                   f"out1={vec_r1}", f"out2={vec_r2}",
+                                   f"ref={cfg['univec_ref']}", "k=27","hdist=1", f"threads={threads}"])
+            vcc_r1, vcc_r2 = count(vec_r1), count(vec_r2)
 
-            bwa_un_r1 = out/f"{base}_un_grch38_bwa_R1.fq"
-            bwa_un_r2 = out/f"{base}_un_grch38_bwa_R2.fq"
-            p1 = subprocess.Popen(["bwa","mem","-t",str(threads), cfg["grch38_bwa_prefix"], str(kr_un_r1), str(kr_un_r2)],
+            # 4) Kraken2 (keep unclassified)
+            krdb = kraken2_override or cfg["kraken2_db"]
+            kr_un_r1 = out/f"{sample}_kraken2_R_1.fq"
+            kr_un_r2 = out/f"{sample}_kraken2_R_2.fq"
+            subprocess.check_call(["kraken2","--db",krdb,"--threads",str(threads),
+                                   "--paired","--unclassified-out", str(out/f"{sample}_kraken2_R#.fq"),
+                                   str(vec_r1), str(vec_r2)])
+            krc_r1, krc_r2 = count(kr_un_r1), count(kr_un_r2)
+
+            # 5) BWA vs GRCh38 → both-unmapped pairs
+            bwa_un_r1 = out/f"{sample}_un_grch38_bwa_R1.fq"
+            bwa_un_r2 = out/f"{sample}_un_grch38_bwa_R2.fq"
+            p1 = subprocess.Popen(["bwa","mem","-t",str(threads), cfg["grch38_fa"], str(kr_un_r1), str(kr_un_r2)],
                                   stdout=subprocess.PIPE)
-            p2 = subprocess.Popen(["samtools","view","-b","-f","12","-F","256"], stdin=p1.stdout, stdout=subprocess.PIPE)
-            subprocess.check_call(["samtools","fastq","-1",str(bwa_un_r1),"-2",str(bwa_un_r2),
+            p2 = subprocess.Popen(["samtools","view","-@",str(threads),"-b","-f","12","-F","256"],
+                                  stdin=p1.stdout, stdout=subprocess.PIPE)
+            subprocess.check_call(["samtools","fastq","-@",str(threads),
+                                   "-1",str(bwa_un_r1),"-2",str(bwa_un_r2),
                                    "-0","/dev/null","-s","/dev/null","-n"], stdin=p2.stdout)
-            bwc_r1, bwc_r2 = nreads_fastq(bwa_un_r1), nreads_fastq(bwa_un_r2)
+            bwc_r1, bwc_r2 = count(bwa_un_r1), count(bwa_un_r2)
 
-            subprocess.check_call([
-                "bowtie2","-p",str(threads), "-x", cfg["t2t_bt2_prefix"],
-                "-1",str(bwa_un_r1),"-2",str(bwa_un_r2),
-                "--very-sensitive","--un-conc",str(out/f"{base}_un_t2t_R%.fq"), "-S","/dev/null"
-            ])
-            t2t_un_r1 = out/f"{base}_un_t2t_R1.fq"
-            t2t_un_r2 = out/f"{base}_un_t2t_R2.fq"
-            t2c_r1, t2c_r2 = nreads_fastq(t2t_un_r1), nreads_fastq(t2t_un_r2)
+            # 6) Bowtie2 vs T2T → --un-conc retains both-unmapped
+            subprocess.check_call(["bowtie2","-p",str(threads),"-x",cfg["t2t_bt2_prefix"],
+                                   "-1",str(bwa_un_r1),"-2",str(bwa_un_r2),
+                                   "--very-sensitive","--un-conc",str(out/f"{sample}_un_t2t_R%.fq"), "-S","/dev/null"])
+            t2t_un_r1 = out/f"{sample}_un_t2t_R1.fq"; t2t_un_r2 = out/f"{sample}_un_t2t_R2.fq"
+            t2c_r1, t2c_r2 = count(t2t_un_r1), count(t2t_un_r2)
 
-            hprc_un_r1 = out/f"{base}_un_hprc_R1.fq"
-            hprc_un_r2 = out/f"{base}_un_hprc_R2.fq"
-            p3 = subprocess.Popen(["minimap2","-t",str(threads),"-ax","sr",(cfg.get("hprc_mmi") or cfg["hprc_fa"]),
-                                   str(t2t_un_r1), str(t2t_un_r2)], stdout=subprocess.PIPE)
-            p4 = subprocess.Popen(["samtools","view","-b","-f","12","-F","256"], stdin=p3.stdout, stdout=subprocess.PIPE)
-            subprocess.check_call(["samtools","fastq","-1",str(hprc_un_r1),"-2",str(hprc_un_r2),
+            # 7) minimap2 vs HPRC → both-unmapped pairs
+            hprc_un_r1 = out/f"{sample}_un_hprc_R1.fq"
+            hprc_un_r2 = out/f"{sample}_un_hprc_R2.fq"
+            ref_hprc = cfg.get("hprc_mmi") or cfg["hprc_fa"]
+            p3 = subprocess.Popen(["minimap2","-t",str(threads),"-ax","sr", ref_hprc, str(t2t_un_r1), str(t2t_un_r2)],
+                                  stdout=subprocess.PIPE)
+            p4 = subprocess.Popen(["samtools","view","-@",str(threads),"-b","-f","12","-F","256"],
+                                  stdin=p3.stdout, stdout=subprocess.PIPE)
+            subprocess.check_call(["samtools","fastq","-@",str(threads),
+                                   "-1",str(hprc_un_r1),"-2",str(hprc_un_r2),
                                    "-0","/dev/null","-s","/dev/null","-n"], stdin=p4.stdout)
-            hpc_r1, hpc_r2 = nreads_fastq(hprc_un_r1), nreads_fastq(hprc_un_r2)
+            hpc_r1, hpc_r2 = count(hprc_un_r1), count(hprc_un_r2)
 
-            with open(rep, "a") as rfh:
-                rfh.write(",".join(map(str, [
-                  sample, init_r1, init_r2, trc_r1, trc_r2, vcc_r1, vcc_r2, ddc_r1, ddc_r2,
-                  krc_r1, krc_r2, bwc_r1, bwc_r2, t2c_r1, t2c_r2, hpc_r1, hpc_r2
-                ])) + "\n")
-
-            for f in [kr_un_r1, kr_un_r2, t2t_un_r1, t2t_un_r2, bwa_un_r1, bwa_un_r2, bb_stats, kr_report,
-                      vec_r1, vec_r2, dd_r1, dd_r2]:
-                Path(f).unlink(missing_ok=True)
+            with open(report, "a") as r:
+                r.write(",".join(map(str, [sample, init_r1, init_r2, trc_r1, trc_r2, ddc_r1, ddc_r2,
+                                           vcc_r1, vcc_r2, krc_r1, krc_r2, bwc_r1, bwc_r2,
+                                           t2c_r1, t2c_r2, hpc_r1, hpc_r2])) + "\n")
 
     else:
-        if not rep.exists():
-            rep.write_text("Sample,Initial,Trimmed,VectorClean,Dedup,Kraken2,BWA,T2T,HPRC\n")
-        singles = [f for f in sorted(list(Path(input_dir).glob("*.fastq*"))) if "_R2" not in f.name]
-        for r in singles:
-            base = r.name.replace(".fastq.gz","").replace(".fastq","").replace("_R1","")
-            print(f"[WGS-SE] {base}")
-            init = nreads_fastq(r)
+        # SINGLE-END
+        files = sorted(list(inp.glob("*.fastq*")) + list(inp.glob("*.fq*")))
+        for r1 in files:
+            sample = r1.name.rsplit(".",1)[0]
+            print(f"[WGS] {sample} (single)")
+            init = count(r1)
 
-            tr, base = _trim_galore_single(Path(output_dir), r, threads, trim_quality, trim_length)
-            trc = nreads_fastq(tr)
+            subprocess.check_call(["trim_galore","--cores",str(threads),
+                                   "--quality",str(trim_q),"--length",str(trim_len),
+                                   "--output_dir",str(out), str(r1)])
+            tr = next((p for p in [out/f"{sample}_trimmed.fq.gz", out/f"{sample}_trimmed.fq"] if p.exists()), None)
+            if not tr:
+                cand = list(out.glob(f"{sample}*trim*fq*"))
+                if not cand:
+                    print(f"[humanfilt] no trimmed file for {sample}; skip")
+                    continue
+                tr = cand[0]
+            trc = count(tr)
 
-            vec = Path(output_dir)/f"{base}_vec.fq"
-            bb_stats = Path(output_dir)/f"{base}_bbduk_stats.txt"
-            subprocess.check_call([
-                "bbduk.sh", f"in={tr}", f"out={vec}",
-                f"ref={cfg['univec_ref']}", "k=27", "hdist=1",
-                f"stats={bb_stats}", f"threads={threads}"
-            ])
-            vcc = nreads_fastq(vec)
+            dd = out/f"{sample}_dedup.fq"
+            subprocess.check_call(["dedupe.sh", f"in={tr}", f"out={dd}", "ac=f", f"threads={threads}"])
+            ddc = count(dd)
 
-            dd = Path(output_dir)/f"{base}_dedup.fq"
-            subprocess.check_call(["dedupe.sh", f"in={vec}", f"out={dd}", "ac=f", f"threads={threads}"])
-            ddc = nreads_fastq(dd)
+            vec = out/f"{sample}_bbduk.fq"
+            subprocess.check_call(["bbduk.sh", f"in={dd}", f"out={vec}",
+                                   f"ref={cfg['univec_ref']}", "k=27","hdist=1", f"threads={threads}"])
+            vcc = count(vec)
 
-            kr_un = Path(output_dir)/f"{base}_kraken2.fastq"
-            kr_rep = Path(output_dir)/f"{base}_kraken2_report.txt"
-            subprocess.check_call([
-                "kraken2","--db",cfg["kraken2_db"],"--threads",str(threads),
-                "--report",str(kr_rep),"--unclassified-out",str(kr_un), str(dd)
-            ])
-            krc = nreads_fastq(kr_un)
+            krdb = kraken2_override or cfg["kraken2_db"]
+            kr_un = out/f"{sample}_kraken2.fastq"
+            subprocess.check_call(["kraken2","--db",krdb,"--threads",str(threads),
+                                   "--unclassified-out",str(kr_un), str(vec)])
+            krc = count(kr_un)
+            current = kr_un
 
-            bwa_un = Path(output_dir)/f"{base}_un_grch38_bwa.fq"
-            p1 = subprocess.Popen(["bwa","mem","-t",str(threads), cfg["grch38_bwa_prefix"], str(kr_un)],
-                                  stdout=subprocess.PIPE)
-            p2 = subprocess.Popen(["samtools","view","-b","-F","256"], stdin=p1.stdout, stdout=subprocess.PIPE)
-            p3 = subprocess.Popen(["samtools","view","-b","-f","4"], stdin=p2.stdout, stdout=subprocess.PIPE)
-            with open(bwa_un, "wb") as fout:
-                subprocess.check_call(["samtools","fastq","-"], stdin=p3.stdout, stdout=fout)
-            bwc = nreads_fastq(bwa_un)
+            # minimap2 chain: GRCh38 -> T2T -> HPRC
+            def _filter(tag, ref):
+                un = out/f"{sample}_un_{tag}.fastq"
+                p1 = subprocess.Popen(["minimap2","-t",str(threads),"-ax","sr", ref, str(current)], stdout=subprocess.PIPE)
+                p2 = subprocess.Popen(["samtools","view","-@",str(threads),"-b","-F","256"], stdin=p1.stdout, stdout=subprocess.PIPE)
+                p3 = subprocess.Popen(["samtools","view","-@",str(threads),"-b","-f","4"], stdin=p2.stdout, stdout=subprocess.PIPE)
+                subprocess.check_call(["samtools","fastq","-0","/dev/null","-s","/dev/null","-n","-"],
+                                      stdin=p3.stdout, stdout=open(un,"wb"))
+                return un
 
-            t2t_un = Path(output_dir)/f"{base}_un_t2t.fq"
-            subprocess.check_call([
-                "bowtie2","-p",str(threads), "-x", cfg["t2t_bt2_prefix"],
-                "-U", str(bwa_un),
-                "--very-sensitive","--un", str(t2t_un), "-S","/dev/null"
-            ])
-            t2c = nreads_fastq(t2t_un)
+            current = _filter("grch38", cfg["grch38_fa"]); c_grch = count(current)
+            t2t_fa = next((p for p in Path(cfg["data_dir"]).rglob("T2T*.*fa*")), Path(cfg["grch38_fa"]))
+            current = _filter("t2t", str(t2t_fa)); c_t2t = count(current)
+            ref_hprc = cfg.get("hprc_mmi") or cfg["hprc_fa"]
+            current = _filter("hprc", ref_hprc); c_hprc = count(current)
 
-            hprc_un = Path(output_dir)/f"{base}_un_hprc.fq"
-            p4 = subprocess.Popen(["minimap2","-t",str(threads),"-ax","sr",(cfg.get("hprc_mmi") or cfg["hprc_fa"]),
-                                   str(t2t_un)], stdout=subprocess.PIPE)
-            p5 = subprocess.Popen(["samtools","view","-b","-F","256"], stdin=p4.stdout, stdout=subprocess.PIPE)
-            p6 = subprocess.Popen(["samtools","view","-b","-f","4"], stdin=p5.stdout, stdout=subprocess.PIPE)
-            with open(hprc_un, "wb") as fout:
-                subprocess.check_call(["samtools","fastq","-"], stdin=p6.stdout, stdout=fout)
-            hpc = nreads_fastq(hprc_un)
+            with open(report, "a") as r:
+                r.write(f"{sample},{init},{trc},{ddc},{vcc},{krc},{c_grch},{c_t2t},{c_hprc}\n")
 
-            with open(rep, "a") as rfh:
-                rfh.write(f"{base},{init},{trc},{vcc},{ddc},{krc},{bwc},{t2c},{hpc}\n")
-
-            for f in [kr_un, kr_rep, vec, dd, bb_stats, bwa_un, t2t_un]:
-                Path(f).unlink(missing_ok=True)

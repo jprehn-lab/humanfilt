@@ -1,0 +1,21 @@
+# Python build/caches
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.build/
+dist/
+
+# Logs & local stuff
+*.log
+.env
+.venv
+
+# Humanfilt data and big archives (не коммитим)
+humanfilt_cache/
+bundles/
+*.tar.zst
+*.sha256
+
+# Misc
+.DS_Store

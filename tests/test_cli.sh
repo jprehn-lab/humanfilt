@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
-set -eux
+set -euo pipefail
 humanfilt --help
+
