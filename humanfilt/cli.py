@@ -99,63 +99,7 @@ def main():
         validate_cfg_or_die(cfg)
 
     threads = args.threads
-    if args.cmd == "rna-test":
-        # Build path to bash script in repo
-        scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
-        script = scripts_dir / "rna_test.sh"
-        if not script.exists():
-            print(f"rna_test.sh not found at {script}", file=sys.stderr)
-            sys.exit(1)
-        # Derive config path from data_dir
-        cfg_path = Path(cfg.get("data_dir") or os.environ.get("HUMANFILT_DATA_DIR", "")).expanduser()
-        if not cfg_path:
-            cfg_path = Path.home() / ".local" / "share" / "humanfilt"
-        conf = cfg_path / "config.json"
-        cmd = ["bash", str(script),
-               "--input", args.input,
-               "--output", args.output,
-               "--report", args.report,
-               "--threads", str(threads or 0 or 1),
-               "--config", str(conf)]
-        if args.save_bams:
-            cmd.append("--save-bams")
-        if args.grch38_prefix:
-            cmd += ["--grch38-prefix", args.grch38_prefix]
-        if args.grch38_fasta:
-            cmd += ["--grch38-fasta", args.grch38_fasta]
-        if args.hprc_fasta:
-            cmd += ["--hprc-fasta", args.hprc_fasta]
-        if args.kraken2_db:
-            cmd += ["--kraken2-db", args.kraken2_db]
-        # Run and forward output
-        rc = subprocess.call(cmd)
-        sys.exit(rc)
-    elif args.cmd == "rna-test-next":
-        scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
-        script = scripts_dir / "rna_test_next.sh"
-        if not script.exists():
-            print(f"rna_test_next.sh not found at {script}", file=sys.stderr)
-            sys.exit(1)
-        cfg_path = Path(cfg.get("data_dir") or os.environ.get("HUMANFILT_DATA_DIR", "")).expanduser()
-        if not cfg_path:
-            cfg_path = Path.home() / ".local" / "share" / "humanfilt"
-        conf = cfg_path / "config.json"
-        cmd = ["bash", str(script),
-               "--input", args.input,
-               "--output", args.output,
-               "--report", args.report,
-               "--threads", str(threads or 0 or 1),
-               "--config", str(conf),
-               "--script", str(args.script)]
-        if args.save_bams:
-            cmd.append("--save-bams")
-        # Optional overrides
-        if args.grch38_prefix: cmd += ["--grch38-prefix", args.grch38_prefix]
-        if args.grch38_fasta:  cmd += ["--grch38-fasta", args.grch38_fasta]
-        if args.hprc_fasta:    cmd += ["--hprc-fasta", args.hprc_fasta]
-        if args.kraken2_db:    cmd += ["--kraken2-db", args.kraken2_db]
-        rc = subprocess.call(cmd)
-        sys.exit(rc)
+    # (RNA test branches removed)
     elif args.mode == "wgs":
         run_wgs(
             args.input, args.output, args.report, threads, cfg,
