@@ -1,47 +1,119 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import os, sys, shutil, subprocess, tempfile
 from pathlib import Path
-import gzip, shutil, subprocess, os
+from contextlib import contextmanager
+from typing import Iterable, List, Optional
 
-def have(exe: str) -> bool:
-    return shutil.which(exe) is not None
+# ---------- logging ----------
+def say(msg: str) -> None:
+    print(f"[humanfilt] {msg}", file=sys.stderr)
 
-def ensure_tools(required=(), anyof=()):
-    missing = [c for c in required if not have(c)]
+def ls_dir(p: Path) -> str:
+    try:
+        items = sorted(os.listdir(p))
+    except Exception as e:
+        return f"<cannot list {p}: {e}>"
+    return "\n".join(items)
+
+# ---------- system/tools ----------
+def available_threads() -> int:
+    # Prefer explicit HUMANFILT_THREADS, then common sched/env vars
+    for k in ("HUMANFILT_THREADS", "THREADS", "CPU_COUNT", "SLURM_CPUS_PER_TASK", "NSLOTS", "OMP_NUM_THREADS"):
+        v = os.environ.get(k)
+        if v and v.isdigit():
+            return max(1, int(v))
+    return max(1, os.cpu_count() or 1)
+
+def ensure_tools(names: Iterable[str]) -> None:
+    missing = [n for n in names if shutil.which(n) is None]
     if missing:
-        raise SystemExit(f"[humanfilt] Missing tools: {', '.join(missing)}")
-    if anyof:
-        if not any(have(c) for c in anyof):
-            raise SystemExit(f"[humanfilt] Need at least one of: {', '.join(anyof)}")
+        raise SystemExit("Missing required tools: " + ", ".join(missing))
 
-def call(cmd, **kw):
-    return subprocess.check_call([str(x) for x in cmd], **kw)
+# ---------- fs helpers ----------
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
 
-def nreads_fastq(path: Path) -> int:
-    """Fast read count: prefers seqkit, falls back to counting lines/4 (supports .gz)."""
-    path = Path(path)
-    if have("seqkit"):
+# ---------- tmp dir ----------
+@contextmanager
+def temp_workdir(prefix: str = "hf_"):
+    d = tempfile.mkdtemp(prefix=prefix)
+    try:
+        yield d
+    finally:
         try:
-            out = subprocess.check_output(["seqkit","stats","-T",str(path)], text=True)
-            line = [l for l in out.splitlines() if l.strip()][-1]
-            return int(line.split('\t')[3])  # num_seqs
+            shutil.rmtree(d, ignore_errors=True)
         except Exception:
             pass
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "rt", errors="ignore") as fh:
-        lines = sum(1 for _ in fh)
-    return lines // 4
 
-def user_cache_dir() -> Path:
-    xdg = os.environ.get("XDG_DATA_HOME")
-    return Path(xdg)/"humanfilt" if xdg else Path.home()/".local"/"share"/"humanfilt"
-
-def detect_threads(default_if_unknown: int = 8) -> int:
-    for v in ("HUMANFILT_THREADS","THREADS","OMP_NUM_THREADS","CPU_COUNT"):
-        val = os.environ.get(v)
-        if val and str(val).isdigit():
-            return max(1, int(val))
+# ---------- FASTQ counting ----------
+def _count_with_seqkit(path: Path, threads: Optional[int] = None) -> Optional[int]:
+    """
+    Use `seqkit stats -T` (fast, supports .gz). Return int or None on failure.
+    """
     try:
-        c = os.cpu_count() or default_if_unknown
-        return max(1, int(c))
+        # no -j here; seqkit will use sensible defaults
+        cmd = ["seqkit", "stats", "-T"]
+        if threads and threads > 0:
+            cmd += ["-j", str(threads)]
+        cmd += [str(path)]
+        res = subprocess.run(
+            cmd,
+            check=True, capture_output=True, text=True
+        )
+        lines = [ln for ln in res.stdout.strip().splitlines() if ln.strip()]
+        if len(lines) < 2:
+            return None
+        # header + one row; num_seqs is 4th column
+        row = lines[1].split("\t")
+        if len(row) >= 4:
+            return int(row[3])
     except Exception:
-        return default_if_unknown
+        return None
+    return None
 
+def _count_with_wc(path: Path, threads: Optional[int] = None) -> Optional[int]:
+    """
+    Fallback: wc -l / 4 on (gz|plain) FASTQ using gzip -cd or cat.
+    """
+    try:
+        if str(path).endswith(".gz"):
+            pigz = shutil.which("pigz")
+            if pigz:
+                # pigz can parallelize decompression
+                cmd = [pigz]
+                if threads and threads > 0:
+                    cmd += ["-p", str(threads)]
+                cmd += ["-cd", str(path)]
+            else:
+                gz = shutil.which("gzip")
+                if gz:
+                    cmd = [gz, "-cd", str(path)]
+                else:
+                    cmd = ["zcat", str(path)]
+        else:
+            cmd = ["cat", str(path)]
+        p1 = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        p2 = subprocess.Popen(["wc", "-l"], stdin=p1.stdout, stdout=subprocess.PIPE, text=True)
+        out, _ = p2.communicate()
+        p1.wait()
+        if p2.returncode == 0 and out.strip().isdigit():
+            return int(out.strip()) // 4
+    except Exception:
+        return None
+    return None
+
+def count_reads(pathlike, threads: Optional[int] = None) -> int:
+    """
+    Return number of reads in a FASTQ/FASTQ.gz. Tries seqkit, then wc fallback.
+    """
+    p = Path(pathlike)
+    n = _count_with_seqkit(p, threads)
+    if n is not None:
+        return n
+    n = _count_with_wc(p, threads)
+    if n is not None:
+        return n
+    # last-resort: 0 rather than crashing
+    say(f"WARNING: could not count reads for {p}; returning 0")
+    return 0

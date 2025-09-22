@@ -1,15 +1,22 @@
-import argparse
-from .downloader import ensure_data_ready
-from .pipeline_wgs import run_wgs
-from .pipeline_rnaseq import run_rnaseq
-from .utils import detect_threads
+#!/usr/bin/env python3
 import os
+import sys
+import argparse
+import subprocess
+from pathlib import Path
 
-
+# Default Zenodo record baked in; users may still override via env
 os.environ.setdefault("HUMANFILT_ZENODO_RECORD", "17020482")
 
+from .downloader import ensure_data_ready, validate_cfg_or_die, load_or_scan_config
+from .pipeline_wgs import run_wgs
+try:
+    # Optional; we may hide RNA in some builds
+    from .pipeline_rnaseq import run_rnaseq  # type: ignore
+except Exception:
+    run_rnaseq = None
 
-def _parser():
+def build_parser():
     p = argparse.ArgumentParser(
         prog="humanfilt",
         description="Human read filtering (WGS & RNA-seq) with first-run Zenodo downloads",
@@ -17,43 +24,155 @@ def _parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("setup", help="Download/refresh references & DBs from Zenodo")
-    s.add_argument("--data-dir", default=None, help="Cache directory (default: ~/.local/share/humanfilt)")
-    s.add_argument("--force", action="store_true", help="Re-download even if present")
+    s.add_argument("--data-dir", default=None, help="Cache dir (default: ~/.local/share/humanfilt)")
+    s.add_argument("--force", action="store_true", help="Re-download archives even if present")
 
-    r = sub.add_parser("run", help="Run the pipeline")
-    r.add_argument("--mode", choices=["wgs","rnaseq"], required=True)
-    r.add_argument("--input", required=True, help="Input folder with FASTQs")
-    r.add_argument("--output", required=True, help="Output folder")
-    r.add_argument("--report", required=True, help="CSV report path")
-    r.add_argument("--threads", type=int, default=0, help="Override threads (default: auto from env/CPU)")
-    r.add_argument("--trim-quality", type=int, default=20, help="Trim Galore: --quality INT (default 20)")
-    r.add_argument("--trim-length", type=int, default=20, help="Trim Galore: --length  INT (default 20)")
-    r.add_argument("--data-dir", default=None, help="Override cache folder")
-    r.add_argument("--kraken2-db", default=None, help="Override Kraken2 DB path")
-    r.add_argument("--wgs-layout", choices=["paired","single"], default="paired", help="WGS layout")
-    r.add_argument("--rna-preset", choices=["illumina","ont"], default="illumina",
-                   help="Minimap2 preset for RNA filters (illumina=sr, ont=map-ont)")
-    r.add_argument("--pattern", default=None, help="RNA input pattern (default: *.R1.fastq.gz)")
+    enable_rna = bool(os.environ.get("HUMANFILT_ENABLE_RNA"))
+    r = sub.add_parser("run", help="Run the pipeline (auto-download refs on first run)")
+    r.add_argument("--mode", choices=["wgs", "rnaseq"] if enable_rna else ["wgs"], required=True)
+    r.add_argument("--input", required=True)
+    r.add_argument("--output", required=True)
+    r.add_argument("--report", required=True)
+    r.add_argument("--threads", type=int, default=None)
+    r.add_argument("--trim-quality", type=int, default=20)
+    r.add_argument("--trim-length", type=int, default=20)
+    r.add_argument("--data-dir", default=None)
+    r.add_argument("--kraken2-db", default=None)
+    # (no RNA-specific CLI args needed)
+    r.add_argument("--no-auto-setup", action="store_true")
+    r.add_argument("--keep-temp", action="store_true", help="Keep per-sample temp dirs for debugging")
+    r.add_argument("--save-bams", action="store_true", help="Save alignment BAMs for single-end (BWA/mm2)")
+
+    if False:
+        # Lightweight bash-based RNA test (no UniVec/BBDuk) per user request
+        rb = sub.add_parser("rna-test", help="Run bash RNA test pipeline (trim->kraken2->BWA->HPRC)")
+        rb.add_argument("--input", required=True)
+        rb.add_argument("--output", required=True)
+        rb.add_argument("--report", required=True)
+        rb.add_argument("--threads", type=int, default=None)
+        rb.add_argument("--data-dir", default=None)
+        rb.add_argument("--no-auto-setup", action="store_true")
+        rb.add_argument("--save-bams", action="store_true", help="Also save full BAMs for BWA and HPRC")
+        rb.add_argument("--grch38-prefix", dest="grch38_prefix", default=None, help="Override GRCh38 BWA index prefix")
+        rb.add_argument("--grch38-fasta", dest="grch38_fasta", default=None, help="Override GRCh38 FASTA path")
+        rb.add_argument("--hprc-fasta", dest="hprc_fasta", default=None, help="Override HPRC FASTA path")
+        rb.add_argument("--kraken2-db", dest="kraken2_db", default=None, help="Override Kraken2 DB path")
+
+        # NEXT variant wrapper using external sequence
+        rn = sub.add_parser("rna-test-next", help="Run external NEXT RNA pipeline wrapper")
+        rn.add_argument("--input", required=True)
+        rn.add_argument("--output", required=True)
+        rn.add_argument("--report", required=True)
+        rn.add_argument("--threads", type=int, default=None)
+        rn.add_argument("--data-dir", default=None)
+        rn.add_argument("--no-auto-setup", action="store_true")
+        rn.add_argument("--save-bams", action="store_true")
+        rn.add_argument("--script", default="/mnt/dat5/colon_cancer/cleaning_fastq_next.sh")
+        rn.add_argument("--grch38-prefix", dest="grch38_prefix", default=None)
+        rn.add_argument("--grch38-fasta", dest="grch38_fasta", default=None)
+        rn.add_argument("--hprc-fasta", dest="hprc_fasta", default=None)
+        rn.add_argument("--kraken2-db", dest="kraken2_db", default=None)
     return p
 
 def main():
-    args = _parser().parse_args()
+    args = build_parser().parse_args()
+
     if args.cmd == "setup":
-        ensure_data_ready(args.data_dir, force=args.force)
+        cfg = ensure_data_ready(args.data_dir, force=args.force)
+        validate_cfg_or_die(cfg)
+        print("Setup complete.", file=sys.stderr)
         return
 
-    threads = args.threads if args.threads and args.threads > 0 else detect_threads()
-    cfg = ensure_data_ready(args.data_dir, force=False)
-
-    if args.mode == "wgs":
-        run_wgs(args.input, args.output, args.report, threads, cfg,
-                layout=args.wgs_layout, trim_q=args.trim_quality, trim_len=args.trim_length,
-                kraken2_override=args.kraken2_db)
+    # run
+    if args.no_auto_setup:
+        # Do not auto-download; only use existing cache/config if present
+        cfg = load_or_scan_config(args.data_dir)
     else:
-        run_rnaseq(args.input, args.output, args.report, threads, cfg,
-                   rna_preset=args.rna_preset, trim_q=args.trim_quality, trim_len=args.trim_length,
-                   pattern=args.pattern, kraken2_override=args.kraken2_db)
+        # Ensure refs are present, downloading if missing
+        cfg = ensure_data_ready(args.data_dir, force=False)
+
+    if getattr(args, "kraken2_db", None):
+        cfg["kraken2_db"] = args.kraken2_db
+
+    # Validate only for WGS; external RNA script manages its own refs
+    if getattr(args, "mode", None) == "wgs":
+        validate_cfg_or_die(cfg)
+
+    threads = args.threads
+    if args.cmd == "rna-test":
+        # Build path to bash script in repo
+        scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+        script = scripts_dir / "rna_test.sh"
+        if not script.exists():
+            print(f"rna_test.sh not found at {script}", file=sys.stderr)
+            sys.exit(1)
+        # Derive config path from data_dir
+        cfg_path = Path(cfg.get("data_dir") or os.environ.get("HUMANFILT_DATA_DIR", "")).expanduser()
+        if not cfg_path:
+            cfg_path = Path.home() / ".local" / "share" / "humanfilt"
+        conf = cfg_path / "config.json"
+        cmd = ["bash", str(script),
+               "--input", args.input,
+               "--output", args.output,
+               "--report", args.report,
+               "--threads", str(threads or 0 or 1),
+               "--config", str(conf)]
+        if args.save_bams:
+            cmd.append("--save-bams")
+        if args.grch38_prefix:
+            cmd += ["--grch38-prefix", args.grch38_prefix]
+        if args.grch38_fasta:
+            cmd += ["--grch38-fasta", args.grch38_fasta]
+        if args.hprc_fasta:
+            cmd += ["--hprc-fasta", args.hprc_fasta]
+        if args.kraken2_db:
+            cmd += ["--kraken2-db", args.kraken2_db]
+        # Run and forward output
+        rc = subprocess.call(cmd)
+        sys.exit(rc)
+    elif args.cmd == "rna-test-next":
+        scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+        script = scripts_dir / "rna_test_next.sh"
+        if not script.exists():
+            print(f"rna_test_next.sh not found at {script}", file=sys.stderr)
+            sys.exit(1)
+        cfg_path = Path(cfg.get("data_dir") or os.environ.get("HUMANFILT_DATA_DIR", "")).expanduser()
+        if not cfg_path:
+            cfg_path = Path.home() / ".local" / "share" / "humanfilt"
+        conf = cfg_path / "config.json"
+        cmd = ["bash", str(script),
+               "--input", args.input,
+               "--output", args.output,
+               "--report", args.report,
+               "--threads", str(threads or 0 or 1),
+               "--config", str(conf),
+               "--script", str(args.script)]
+        if args.save_bams:
+            cmd.append("--save-bams")
+        # Optional overrides
+        if args.grch38_prefix: cmd += ["--grch38-prefix", args.grch38_prefix]
+        if args.grch38_fasta:  cmd += ["--grch38-fasta", args.grch38_fasta]
+        if args.hprc_fasta:    cmd += ["--hprc-fasta", args.hprc_fasta]
+        if args.kraken2_db:    cmd += ["--kraken2-db", args.kraken2_db]
+        rc = subprocess.call(cmd)
+        sys.exit(rc)
+    elif args.mode == "wgs":
+        run_wgs(
+            args.input, args.output, args.report, threads, cfg,
+            trim_quality=args.trim_quality, trim_length=args.trim_length,
+            keep_temp=args.keep_temp, save_bams=args.save_bams,
+        )
+    else:
+        # Hidden by default; enable with HUMANFILT_ENABLE_RNA=1
+        if not os.environ.get("HUMANFILT_ENABLE_RNA"):
+            print("RNA mode is disabled in this build (coming soon). Set HUMANFILT_ENABLE_RNA=1 to enable.", file=sys.stderr)
+            sys.exit(2)
+        from .rnaseq_pipeline import run_rnaseq
+        run_rnaseq(
+            args.input, args.output, args.report, threads, cfg,
+            trim_quality=args.trim_quality, trim_length=args.trim_length,
+            save_bams=args.save_bams,
+        )
 
 if __name__ == "__main__":
     main()
-

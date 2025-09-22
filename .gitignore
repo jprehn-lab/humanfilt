@@ -19,3 +19,9 @@ bundles/
 
 # Misc
 .DS_Store
+humanfilt.egg-info/
+build/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
