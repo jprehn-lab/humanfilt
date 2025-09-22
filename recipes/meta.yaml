@@ -36,7 +36,7 @@ test:
     - humanfilt run --mode wgs --input . --output . --report _noop.csv --threads 1 --no-auto-setup || true
 
 about:
-  home: https://github.com/your-org/humanfilt
+  home: https://github.com/jprehn-lab/humanfilt
   license: MIT
   summary: WGS human read filtering with auto-downloaded references (GRCh38/T2T/HPRC/UniVec + Kraken2).
 
