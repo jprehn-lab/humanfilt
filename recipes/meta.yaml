@@ -4,7 +4,7 @@ package:
 
 source:
   url: https://github.com/your-org/humanfilt/archive/refs/tags/v0.1.0.tar.gz
-  sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  # TODO: replace with real sha256 for v0.1.0
+  sha256: 0f9f96e41e019181bcc15fa0bad0d8c2494032c9fb6d0a8d9bd00799715e8824
 
 build:
   noarch: python
@@ -42,5 +42,4 @@ about:
 
 extra:
   recipe-maintainers:
-    - your_bioconda_handle
-
+    - marsfro
