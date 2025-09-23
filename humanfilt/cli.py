@@ -2,8 +2,8 @@
 import os
 import sys
 import argparse
-import subprocess
-from pathlib import Path
+from pathlib import Path  # optional
+# import subprocess  # only if you actually use it
 
 # Default Zenodo record baked in; users may still override via env
 os.environ.setdefault("HUMANFILT_ZENODO_RECORD", "17020482")
@@ -16,7 +16,8 @@ try:
 except Exception:
     run_rnaseq = None
 
-def build_parser():
+
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="humanfilt",
         description="Human read filtering (WGS & RNA-seq) with first-run Zenodo downloads",
@@ -37,51 +38,56 @@ def build_parser():
     r.add_argument("--trim-quality", type=int, default=20)
     r.add_argument("--trim-length", type=int, default=20)
     r.add_argument("--data-dir", default=None)
-    r.add_argument("--kraken2-db", default=None)
-    # (no RNA-specific CLI args needed)
+    r.add_argument("--kraken2-db", dest="kraken2_db", default=None)
     r.add_argument("--no-auto-setup", action="store_true")
     r.add_argument("--keep-temp", action="store_true", help="Keep per-sample temp dirs for debugging")
     r.add_argument("--save-bams", action="store_true", help="Save alignment BAMs for single-end (BWA/mm2)")
-
-    # (no RNA subcommands)
     return p
 
-def main():
+
+def main() -> int:
     args = build_parser().parse_args()
 
     if args.cmd == "setup":
         cfg = ensure_data_ready(args.data_dir, force=args.force)
         validate_cfg_or_die(cfg)
         print("Setup complete.", file=sys.stderr)
-        return
+        return 0
 
-    # run
+    # Prepare refs/config for 'run'
     if args.no_auto_setup:
-        # Do not auto-download; only use existing cache/config if present
         cfg = load_or_scan_config(args.data_dir)
     else:
-        # Ensure refs are present, downloading if missing
         cfg = ensure_data_ready(args.data_dir, force=False)
 
     if getattr(args, "kraken2_db", None):
         cfg["kraken2_db"] = args.kraken2_db
 
-    # Validate only for WGS; external RNA script manages its own refs
-    if getattr(args, "mode", None) == "wgs":
-        validate_cfg_or_die(cfg)
-
     threads = args.threads
-    # (RNA test branches removed)
-    elif args.mode == "wgs":
+
+    if args.mode == "wgs":
+        validate_cfg_or_die(cfg)  # only WGS needs this here
         run_wgs(
             args.input, args.output, args.report, threads, cfg,
             trim_quality=args.trim_quality, trim_length=args.trim_length,
             keep_temp=args.keep_temp, save_bams=args.save_bams,
         )
+        return 0
+
+    elif args.mode == "rnaseq":
+        if run_rnaseq is None:
+            print("RNA mode is disabled in this build (coming soon).", file=sys.stderr)
+            return 2
+        # Call your RNA-seq runner (adjust signature if different)
+        return int(run_rnaseq(
+            args.input, args.output, args.report, threads, cfg
+        ) or 0)
+
     else:
-        # RNASEQ not included in this build
-        print("RNA mode is disabled in this build (coming soon).", file=sys.stderr)
-        sys.exit(2)
+        print("Unknown mode", file=sys.stderr)
+        return 2
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
+
