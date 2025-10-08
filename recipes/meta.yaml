@@ -1,10 +1,9 @@
 package:
     name: humanfilt
-    version: 0.1.1
+    version: 1.0.0
 
 source:
-    url: https://github.com/jprehn-lab/humanfilt/archive/refs/tags/v0.1.1.tar.gz
-    sha256: f2e0768e10399d0fe91e337fc1326d8ff2c7b7a2918d69084beddfbe614b035d
+    path: ..
 
 build:
     noarch: python
@@ -39,9 +38,8 @@ test:
 about:
     home: https://github.com/jprehn-lab/humanfilt
     license: MIT
-    summary: WGS human read filtering with auto-downloaded references (GRCh38/T2T/HPRC/UniVec + Kraken2).
+    summary: WGS human read filtering (GRCh38/T2T/HPRC/UniVec + Kraken2).
 
 extra:
     recipe-maintainers:
       - marsfro   
-

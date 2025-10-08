@@ -1,20 +1,18 @@
 # humanfilt
 
-Conda CLI for WGS human‐read decontamination.
+Tool for WGS human‐read decontamination.
 
 - Tool dependencies are installed by Conda.
 - References/DBs are auto‑downloaded on first run via `humanfilt setup` from Zenodo record `17020482`.
-- Threads: auto‑detected from env (`HUMANFILT_THREADS`, `THREADS`, `OMP_NUM_THREADS`, `CPU_COUNT`) or CPU count; override with `--threads`.
+- Threads: auto‑detected from CPU count or override with `--threads`.
+
 
 ## Quick start
 
-1) Create environment (dev example)
+1) Create environment
 ```bash
-conda create -n hf -c conda-forge -c bioconda \
-  python=3.10 bwa bowtie2 minimap2 samtools kraken2 trim-galore \
-  bbmap fastuniq seqkit curl zstd tar pigz -y
+conda create -n hf -y -c conda-forge -c bioconda humanfilt=1.0.0
 conda activate hf
-pip install -e .
 ```
 
 2) Download references (first time)
@@ -43,10 +41,10 @@ Recommended workflow
 ## WGS pipeline (paired)
 
 Per sample:
-1. Trim Galore (`--trim-quality`, `--trim-length`)
-2. De‑duplicate (FastUniq)
-3. UniVec screen (BBDuk)
-4. Kraken2 (keep UNCLASSIFIED)
+1. Kraken2 (keep unclassified)
+2. Trim Galore (`--trim-quality`, `--trim-length`)
+3. De‑duplicate (FastUniq)
+4. UniVec screen (BBDuk)
 5. BWA vs GRCh38 (keep both‑unmapped pairs)
 6. Bowtie2 vs T2T (keep both‑unmapped pairs)
 7. Minimap2 vs HPRC (keep both‑unmapped pairs) → final FASTQs

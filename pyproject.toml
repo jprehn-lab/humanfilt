@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "humanfilt"
-version = "0.1.1"
-description = "WGS/RNA-seq decontamination with first-run Zenodo download (GRCh38/T2T/HPRC/GENCODE/UniVec + Kraken2)."
+version = "1.0.0"
+description = "WGS decontamination with first-run Zenodo download (GRCh38/T2T/HPRC/GENCODE/UniVec + Kraken2)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
