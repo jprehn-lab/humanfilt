@@ -126,7 +126,10 @@ def _scan_cfg(base: Path) -> Dict[str, str]:
     gr_pref = _derive_bwa_prefix_for_fasta(gr_fa) if gr_fa else None
     cfg["grch38_bwa_prefix"] = str(gr_pref) if gr_pref else ""
     t2_dir = base / "t2t"
-    t2_bt2_1 = next(t2_dir.rglob("*.1.bt2"), None) if t2_dir.exists() else None
+    if t2_dir.exists():
+        t2_bt2_1 = next((p for p in t2_dir.rglob("*.1.bt2") if ".rev." not in p.name), None)
+    else:
+        t2_bt2_1 = None
     cfg["t2t_bt2_prefix"] = (str(t2_bt2_1).removesuffix(".1.bt2") if t2_bt2_1 else "")
     hp_dir = base / "hprc"
     hp_fa = hp_dir / "hprc-v1.1-mc-grch38.gfa.fa"

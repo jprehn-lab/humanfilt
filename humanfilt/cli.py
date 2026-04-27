@@ -32,7 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--data-dir", default=None)
     r.add_argument("--kraken2-db", dest="kraken2_db", default=None)
     r.add_argument("--no-auto-setup", action="store_true")
-    r.add_argument("--keep-temp", action="store_true", help="Keep per-sample temp dirs for debugging")
+    r.add_argument("--save-intermediates", "--keep-temp", dest="save_intermediates", action="store_true",
+                   help="Keep intermediate FASTQs under --output/intermediates")
+    r.add_argument("--save-logs", action="store_true", help="Write per-sample tool output to <sample>.log inside the tmp dir")
     return p
 
     # (Download subcommand is defined below in main if needed)
@@ -66,7 +68,8 @@ def main() -> int:
     run_wgs(
         args.input, args.output, args.report, args.threads, cfg,
         trim_quality=args.trim_quality, trim_length=args.trim_length,
-        keep_temp=args.keep_temp,
+        save_intermediates=args.save_intermediates,
+        save_logs=args.save_logs,
     )
     return 0
 
