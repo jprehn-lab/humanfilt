@@ -16,6 +16,14 @@ conda create -n hf -y -c conda-forge -c bioconda humanfilt=1.1.0
 conda activate hf
 ```
 
+This installs HumanFilt and its Conda-packaged dependencies. HumanFilt does not download pipeline binaries on first run; it expects tools such as `bwa`, `samtools`, `bowtie2`, `minimap2`, `trim_galore`, `fastuniq`, `bbduk.sh`, `dedupe.sh`, `kraken2`, and `seqkit` to already be available in the active environment.
+
+Install the required pipeline tools into the same environment with:
+
+```bash
+conda install -y -c conda-forge -c bioconda bwa samtools bowtie2 minimap2 trim-galore fastuniq bbmap kraken2 seqkit
+```
+
 2. Download references (first time only)
 
 ```bash
@@ -125,6 +133,8 @@ Examples:
 
 `humanfilt setup` downloads and indexes the references used by the WGS pipeline, including GRCh38, T2T, HPRC, GENCODE transcripts, UniVec, and a Kraken2 human database.
 
+`humanfilt run` will also trigger this setup automatically on first use unless you pass `--no-auto-setup`.
+
 Default cache location:
 
 - `$XDG_DATA_HOME/humanfilt` if `XDG_DATA_HOME` is set
@@ -143,6 +153,25 @@ humanfilt run --data-dir PATH
 ```
 
 After `humanfilt setup --data-dir PATH`, HumanFilt stores a small pointer so later runs can reuse that location automatically.
+
+## External tools
+
+HumanFilt downloads reference data on setup or on the first `run` with auto-setup enabled. It does not install the external command-line tools used by the WGS pipeline.
+
+The active environment must already provide:
+
+- `bwa`
+- `samtools`
+- `bowtie2`
+- `minimap2`
+- `trim_galore`
+- `fastuniq`
+- `bbduk.sh`
+- `dedupe.sh`
+- `kraken2`
+- `seqkit`
+
+If any of these are missing, HumanFilt exits with a `Missing required tools: ...` error before the pipeline starts.
 
 ## Main options
 
